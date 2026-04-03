@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import depchain.blockchain.Transaction;
 import depchain.client.BlockchainClient;
 import depchain.client.ClientReply;
 import depchain.client.ClientRequest;
@@ -23,8 +24,10 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.KeyPair;
 import java.security.PublicKey;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -32,6 +35,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
+import org.apache.tuweni.bytes.Bytes;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Wei;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -85,10 +91,22 @@ class DepChainStage1Test {
         Map<Integer, KeyManager> keyManagers = KeyManager.generateInMemory(
             NetworkConfig.NUM_NODES
         );
-        startNodes(List.of(0, 1, 2, 3), keyManagers);
+        startNodes(List.of(0, 1, 2, 3), keyManagers, new HashMap<>(), true);
 
-        BlockchainClient client = createClient(200, 6200, keyManagers);
-        boolean ok = client.submitRequest("test-consensus-1");
+        BlockchainClient client = createClientWithNodeKey(200, 6200, keyManagers, 0);
+        Address recipient = freshAddress();
+        Transaction tx = Transaction.create(
+            client.getEvmAddress(),
+            recipient,
+            Wei.of(1L),
+            Bytes.EMPTY,
+            1L,
+            21_000L,
+            currentNonce(client.getEvmAddress())
+        );
+        Transaction signedTx = tx.sign(client.getPrivateKey());
+        String payload = Base64.getEncoder().encodeToString(signedTx.serialize());
+        boolean ok = client.submitTransaction(signedTx);
         assertTrue(ok, "Client request should be confirmed");
 
         boolean replicated = waitUntil(
@@ -96,7 +114,7 @@ class DepChainStage1Test {
                 nodesToStop
                     .stream()
                     .allMatch(n ->
-                        n.getBlockchain().contains("test-consensus-1")
+                        n.getBlockchain().contains(payload)
                     ),
             12000
         );
@@ -112,10 +130,22 @@ class DepChainStage1Test {
             NetworkConfig.NUM_NODES
         );
 
-        startNodes(List.of(1, 2, 3), keyManagers);
+        startNodes(List.of(1, 2, 3), keyManagers, new HashMap<>(), true);
 
-        BlockchainClient client = createClient(201, 6201, keyManagers);
-        boolean ok = client.submitRequest("test-failover-1");
+        BlockchainClient client = createClientWithNodeKey(201, 6201, keyManagers, 0);
+        Address recipient = freshAddress();
+        Transaction tx = Transaction.create(
+            client.getEvmAddress(),
+            recipient,
+            Wei.of(1L),
+            Bytes.EMPTY,
+            1L,
+            21_000L,
+            currentNonce(client.getEvmAddress())
+        );
+        Transaction signedTx = tx.sign(client.getPrivateKey());
+        String payload = Base64.getEncoder().encodeToString(signedTx.serialize());
+        boolean ok = client.submitTransaction(signedTx);
         assertTrue(ok, "Client request should succeed after view change");
 
         boolean replicated = waitUntil(
@@ -123,7 +153,7 @@ class DepChainStage1Test {
                 nodesToStop
                     .stream()
                     .allMatch(n ->
-                        n.getBlockchain().contains("test-failover-1")
+                        n.getBlockchain().contains(payload)
                     ),
             20000
         );
@@ -202,17 +232,29 @@ class DepChainStage1Test {
         NetworkFaultController.addDuplicateRule(0, 3, MessageType.COMMIT, 2, 8);
         NetworkFaultController.addCorruptRule(0, 2, MessageType.PREPARE, 6);
 
-        startNodes(List.of(0, 1, 2, 3), keyManagers);
-        BlockchainClient client = createClient(202, 6202, keyManagers);
+        startNodes(List.of(0, 1, 2, 3), keyManagers, new HashMap<>(), true);
+        BlockchainClient client = createClientWithNodeKey(202, 6202, keyManagers, 0);
 
-        boolean ok = client.submitRequest("test-faults-1");
+        Address recipient = freshAddress();
+        Transaction tx = Transaction.create(
+            client.getEvmAddress(),
+            recipient,
+            Wei.of(1L),
+            Bytes.EMPTY,
+            1L,
+            21_000L,
+            currentNonce(client.getEvmAddress())
+        );
+        Transaction signedTx = tx.sign(client.getPrivateKey());
+        String payload = Base64.getEncoder().encodeToString(signedTx.serialize());
+        boolean ok = client.submitTransaction(signedTx);
         assertTrue(ok, "Consensus should survive injected network faults");
 
         boolean replicated = waitUntil(
             () ->
                 nodesToStop
                     .stream()
-                    .allMatch(n -> n.getBlockchain().contains("test-faults-1")),
+                    .allMatch(n -> n.getBlockchain().contains(payload)),
             22000
         );
         assertTrue(replicated, "All nodes should converge after fault burst");
@@ -224,7 +266,7 @@ class DepChainStage1Test {
                     n
                         .getBlockchain()
                         .stream()
-                        .filter(v -> "test-faults-1".equals(v))
+                        .filter(v -> payload.equals(v))
                         .count() ==
                     1
             );
@@ -242,10 +284,22 @@ class DepChainStage1Test {
 
         Map<Integer, ByzantineBehavior> behaviorById = new HashMap<>();
         behaviorById.put(0, ByzantineBehavior.EQUIVOCATE_LEADER);
-        startNodes(List.of(0, 1, 2, 3), keyManagers, behaviorById, false);
+        startNodes(List.of(0, 1, 2, 3), keyManagers, behaviorById, true);
 
-        BlockchainClient client = createClient(203, 6203, keyManagers);
-        boolean ok = client.submitRequest("test-byz-equiv-1");
+        BlockchainClient client = createClientWithNodeKey(203, 6203, keyManagers, 0);
+        Address recipient = freshAddress();
+        Transaction tx = Transaction.create(
+            client.getEvmAddress(),
+            recipient,
+            Wei.of(1L),
+            Bytes.EMPTY,
+            1L,
+            21_000L,
+            currentNonce(client.getEvmAddress())
+        );
+        Transaction signedTx = tx.sign(client.getPrivateKey());
+        String payload = Base64.getEncoder().encodeToString(signedTx.serialize());
+        boolean ok = client.submitTransaction(signedTx);
         assertTrue(
             ok,
             "Request should eventually commit after view change to an honest leader"
@@ -256,7 +310,7 @@ class DepChainStage1Test {
                 nodesToStop
                     .stream()
                     .allMatch(n ->
-                        n.getBlockchain().contains("test-byz-equiv-1")
+                        n.getBlockchain().contains(payload)
                     ),
             30000
         );
@@ -274,10 +328,22 @@ class DepChainStage1Test {
         );
         Map<Integer, ByzantineBehavior> behaviorById = new HashMap<>();
         behaviorById.put(3, ByzantineBehavior.INVALID_VOTE_SIGNATURE);
-        startNodes(List.of(0, 1, 2, 3), keyManagers, behaviorById, false);
+        startNodes(List.of(0, 1, 2, 3), keyManagers, behaviorById, true);
 
-        BlockchainClient client = createClient(204, 6204, keyManagers);
-        boolean ok = client.submitRequest("test-invalid-vote-byz-1");
+        BlockchainClient client = createClientWithNodeKey(204, 6204, keyManagers, 0);
+        Address recipient = freshAddress();
+        Transaction tx = Transaction.create(
+            client.getEvmAddress(),
+            recipient,
+            Wei.of(1L),
+            Bytes.EMPTY,
+            1L,
+            21_000L,
+            currentNonce(client.getEvmAddress())
+        );
+        Transaction signedTx = tx.sign(client.getPrivateKey());
+        String payload = Base64.getEncoder().encodeToString(signedTx.serialize());
+        boolean ok = client.submitTransaction(signedTx);
         assertTrue(ok, "Consensus should tolerate one Byzantine invalid voter");
 
         boolean replicated = waitUntil(
@@ -285,7 +351,7 @@ class DepChainStage1Test {
                 nodesToStop
                     .stream()
                     .allMatch(n ->
-                        n.getBlockchain().contains("test-invalid-vote-byz-1")
+                        n.getBlockchain().contains(payload)
                     ),
             18000
         );
@@ -383,7 +449,7 @@ class DepChainStage1Test {
                     request.getRequestId(),
                     1L,
                     true,
-                    "ok-from-0",
+                    "ok",
                     7
                 );
                 Thread.sleep(150);
@@ -395,7 +461,7 @@ class DepChainStage1Test {
                     request.getRequestId(),
                     2L,
                     true,
-                    "duplicate-from-0",
+                    "ok",
                     7
                 );
                 Thread.sleep(700);
@@ -407,7 +473,7 @@ class DepChainStage1Test {
                     request.getRequestId(),
                     3L,
                     true,
-                    "ok-from-1",
+                    "ok",
                     7
                 );
             } catch (Exception e) {
@@ -435,8 +501,20 @@ class DepChainStage1Test {
         );
         startNodes(List.of(0, 1, 2, 3), keyManagers, new HashMap<>(), true);
 
-        BlockchainClient client = createClient(205, 6205, keyManagers);
-        boolean first = client.submitRequest("test-persist-1");
+        BlockchainClient client = createClientWithNodeKey(205, 6205, keyManagers, 0);
+        Address recipient = freshAddress();
+        Transaction firstTx = Transaction.create(
+            client.getEvmAddress(),
+            recipient,
+            Wei.of(1L),
+            Bytes.EMPTY,
+            1L,
+            21_000L,
+            currentNonce(client.getEvmAddress())
+        );
+        Transaction signedFirstTx = firstTx.sign(client.getPrivateKey());
+        String firstPayload = Base64.getEncoder().encodeToString(signedFirstTx.serialize());
+        boolean first = client.submitTransaction(signedFirstTx);
         assertTrue(first, "First request should commit");
 
         boolean firstReplicated = waitUntil(
@@ -444,7 +522,7 @@ class DepChainStage1Test {
                 nodesToStop
                     .stream()
                     .allMatch(n ->
-                        n.getBlockchain().contains("test-persist-1")
+                        n.getBlockchain().contains(firstPayload)
                     ),
             15000
         );
@@ -469,7 +547,7 @@ class DepChainStage1Test {
         nodesToStop.add(restarted);
 
         boolean restored = waitUntil(
-            () -> restarted.getBlockchain().contains("test-persist-1"),
+            () -> restarted.getBlockchain().contains(firstPayload),
             5000
         );
         assertTrue(restored, "Restarted node should reload persisted chain");
@@ -478,7 +556,18 @@ class DepChainStage1Test {
             "Restarted node should restore its outgoing sequence number"
         );
 
-        boolean second = client.submitRequest("test-persist-2");
+        Transaction secondTx = Transaction.create(
+            client.getEvmAddress(),
+            recipient,
+            Wei.of(2L),
+            Bytes.EMPTY,
+            1L,
+            21_000L,
+            currentNonce(client.getEvmAddress())
+        );
+        Transaction signedSecondTx = secondTx.sign(client.getPrivateKey());
+        String secondPayload = Base64.getEncoder().encodeToString(signedSecondTx.serialize());
+        boolean second = client.submitTransaction(signedSecondTx);
         assertTrue(second, "Second request should still commit after restart");
 
         boolean secondReplicated = waitUntil(
@@ -486,7 +575,7 @@ class DepChainStage1Test {
                 nodesToStop
                     .stream()
                     .allMatch(n ->
-                        n.getBlockchain().contains("test-persist-2")
+                        n.getBlockchain().contains(secondPayload)
                     ),
             18000
         );
@@ -796,6 +885,38 @@ class DepChainStage1Test {
         client.start();
         clientsToStop.add(client);
         return client;
+    }
+
+    private BlockchainClient createClientWithNodeKey(
+        int clientId,
+        int port,
+        Map<Integer, KeyManager> keyManagers,
+        int nodeIdForKey
+    ) throws Exception {
+        KeyManager km = keyManagers.get(nodeIdForKey);
+        KeyPair kp = new KeyPair(km.getPublicKey(nodeIdForKey), km.getPrivateKey());
+        BlockchainClient client = new BlockchainClient(clientId, port, kp);
+
+        Map<Integer, PublicKey> publicKeys = new HashMap<>();
+        for (int i = 0; i < NetworkConfig.NUM_NODES; i++) {
+            publicKeys.put(i, keyManagers.get(i).getPublicKey(i));
+        }
+        client.setNodePublicKeys(publicKeys);
+        client.start();
+        clientsToStop.add(client);
+        return client;
+    }
+
+    private long currentNonce(Address sender) {
+        return nodesToStop.get(0).getEvmService().getNonce(sender);
+    }
+
+    private static Address freshAddress() {
+        byte[] bytes = new byte[20];
+        long s = System.nanoTime();
+        bytes[18] = (byte) (s >> 8);
+        bytes[19] = (byte) s;
+        return Address.wrap(org.apache.tuweni.bytes.Bytes.wrap(bytes));
     }
 
     private boolean waitUntil(BooleanSupplier condition, long timeoutMs)
